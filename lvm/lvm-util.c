@@ -275,6 +275,8 @@ lvm_scan_lvs(struct vg *vg)
 
 		if (!strcmp(type, "linear"))
 			seg.type = LVM_SEG_TYPE_LINEAR;
+		else if (!strcmp(type, "cache-pool"))
+			goto next;
 		else
 			seg.type = LVM_SEG_TYPE_UNKNOWN;
 
