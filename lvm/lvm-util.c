@@ -189,11 +189,78 @@ out:
 	return err;
 }
 
+static char*
+lvm_remove_brackets(char* name)
+{
+	char* end = strchr(name, ']');
+	*end = '\0';
+	return name + 1;
+}
+
+static int
+lvm_get_pv_from_lv(char tmp_device[MAX_NAME_SIZE], struct vg* vg, char* device_name, uint64_t* ret_start)
+{
+	char *cmd;
+	FILE *scan;
+	int i, err;
+	uint64_t start;
+	char name[256], devices[1024], dev[256];
+	char* lv_to_compare;
+
+	err = asprintf(&cmd, "lvs %s --noheadings --nosuffix --units=b "
+			"--options=lv_name,devices --unbuffered -a 2> /dev/null", vg->name);
+	if (err == -1)
+		return -ENOMEM;
+
+	errno = 0;
+	scan  = popen(cmd, "r");
+	if (!scan) {
+		err = (errno ? -errno : -ENOMEM);
+		goto out;
+	}
+
+	while (!lvm_read_line(scan)) {
+		if (sscanf(line, _NAME  "%1023s",
+					name, devices) != 2) {
+			EPRINTF("sscanf failed on '%s'\n", line);
+			goto out;
+		}
+		for (i = 0; i < strlen(devices); i++) /* Remove the "(%d)" from the end of device */
+			if (strchr(",()", devices[i]))
+				devices[i] = ' ';
+		if (sscanf(devices, _NAME" %"PRIu64, dev, &start) != 2) {
+			EPRINTF("sscanf failed on '%s'\n", devices);
+			return -EINVAL;
+		}
+
+		if (name[0] == '[') {
+			/** LV name is hidden. Remove [] to compare against device_name */
+			lv_to_compare = lvm_remove_brackets(name);
+		}
+		else{ lv_to_compare = name; }
+
+		if (!strcmp(lv_to_compare, device_name)) {
+			strcpy(tmp_device, dev);
+			*ret_start = start;
+			return 0;
+		}
+
+		lvm_next_line(scan);
+	}
+
+out:
+	if (scan)
+		pclose(scan);
+	free(cmd);
+	return err;
+}
+
 static int
 lvm_parse_lv_devices(struct vg *vg, struct lv_segment *seg, char *devices)
 {
 	int i;
-	uint64_t start, pe_start;
+	uint64_t start, pe_start, ret_start = 0;
+	char tmp_device[MAX_NAME_SIZE];
 
 	for (i = 0; i < strlen(devices); i++)
 		if (strchr(",()", devices[i]))
@@ -202,6 +269,14 @@ lvm_parse_lv_devices(struct vg *vg, struct lv_segment *seg, char *devices)
 	if (sscanf(devices, _NAME" %"PRIu64, seg->device, &start) != 2) {
 		EPRINTF("sscanf failed on '%s'\n", devices);
 		return -EINVAL;
+	}
+
+	if (seg->type == LVM_SEG_TYPE_CACHED) {
+		/** Need to get real device to compare against vg->pvs[i].name **/
+		lvm_get_pv_from_lv(tmp_device, vg, seg->device, &ret_start);
+		start = ret_start;
+		strcpy(seg->device, tmp_device);
+		seg->type = LVM_SEG_TYPE_LINEAR;
 	}
 
 	pe_start = -1;
@@ -277,6 +352,10 @@ lvm_scan_lvs(struct vg *vg)
 			seg.type = LVM_SEG_TYPE_LINEAR;
 		else if (!strcmp(type, "cache-pool"))
 			goto next;
+		else if (!strcmp(type, "cache"))
+            seg.type = LVM_SEG_TYPE_CACHED;
+		else if (!strcmp(type, "writecache"))
+            seg.type = LVM_SEG_TYPE_CACHED;
 		else
 			seg.type = LVM_SEG_TYPE_UNKNOWN;
 

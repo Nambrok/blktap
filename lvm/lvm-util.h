@@ -37,6 +37,7 @@
 
 #define LVM_SEG_TYPE_LINEAR      1
 #define LVM_SEG_TYPE_UNKNOWN     2
+#define LVM_SEG_TYPE_CACHED     3
 
 struct lv_segment {
 	uint8_t                  type;
